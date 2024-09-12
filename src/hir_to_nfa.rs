@@ -9,8 +9,8 @@ pub fn hir_to_nfa(hir: &Hir) -> Nfa<u8> {
     let mut nfa = Automata::new();
     let mut counter = Counter::new(0);
     let (start, end) = rec_hir_to_nfa(hir, &mut counter, &mut nfa);
-    nfa.initial_states.push(start);
-    nfa.accept_states.push(end);
+    nfa.initial_states.insert(start);
+    nfa.accept_states.insert(end);
     nfa
 }
 

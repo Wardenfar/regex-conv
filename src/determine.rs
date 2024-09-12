@@ -43,7 +43,7 @@ where
                         .iter()
                         .any(|state| nfa.accept_states.contains(state));
                     if is_accept {
-                        dfa.accept_states.push(next);
+                        dfa.accept_states.insert(next);
                     }
                     next
                 })
@@ -52,7 +52,7 @@ where
 
     let initial_state = nfa.initial_states.iter().copied().collect();
     let initial_state = normalize_multi_state(nfa, initial_state);
-    dfa.initial_states.push(nfa2dfa!(initial_state));
+    dfa.initial_states.insert(nfa2dfa!(initial_state));
 
     let mut to_explore: HashSet<MultiState> = Default::default();
     let mut explored: HashSet<MultiState> = Default::default();

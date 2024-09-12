@@ -7,8 +7,8 @@ pub type State = u32;
 
 #[derive(Debug, Clone)]
 pub struct Automata<T> {
-    pub initial_states: Vec<State>,
-    pub accept_states: Vec<State>,
+    pub initial_states: HashSet<State>,
+    pub accept_states: HashSet<State>,
     pub links: Vec<Link<T>>,
 }
 
@@ -75,6 +75,26 @@ impl<T> Automata<T> {
 
     pub fn links_from(&self, from: State) -> impl Iterator<Item = &Link<T>> {
         self.links.iter().filter(move |link| link.from == from)
+    }
+
+    pub fn links_to(&self, to: State) -> impl Iterator<Item = &Link<T>> {
+        self.links.iter().filter(move |link| link.to == to)
+    }
+
+    pub fn links_from_to(&self, from: State, to: State) -> impl Iterator<Item = &Link<T>> {
+        self.links
+            .iter()
+            .filter(move |link| link.from == from && link.to == to)
+    }
+
+    pub fn remove_links(&mut self, from: State, to: State) {
+        self.links
+            .retain(|link| !(link.from == from && link.to == to))
+    }
+
+    pub fn remove_links_any(&mut self, from_ot_to: State) {
+        self.links
+            .retain(|link| !(link.from == from_ot_to || link.to == from_ot_to))
     }
 
     pub fn max_state(&self) -> State {
