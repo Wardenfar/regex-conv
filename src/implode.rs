@@ -1,27 +1,33 @@
-use std::{fmt::Debug, hash::Hash};
+use regex_automata::{Automata, Dfa, State};
 
-use crate::automata::{Automata, Dfa, State};
+use crate::codec::Codec;
 
-pub fn implode_dfa<MF, T, T2>(dfa: &Dfa<T>, n: usize, merge_fn: MF) -> Dfa<T2>
-where
-    MF: Fn(Vec<T>) -> Vec<T2>,
-    T: Clone + Hash + Eq + Debug,
-{
+pub fn implode_dfa<CODEC: Codec>(original_dfa: &Dfa<bool>) -> Dfa<u8> {
     let mut imploded = Automata::new();
-    imploded.initial_states = dfa.initial_states.clone();
-    imploded.accept_states = dfa.accept_states.clone();
+    imploded.initial_states = original_dfa.initial_states.clone();
+    imploded.accept_states = original_dfa.accept_states.clone();
 
-    for from in dfa.all_states() {
-        let mut implosions = Vec::new();
-        rec_implode(&mut implosions, &mut Vec::new(), dfa, from, n);
+    let mut to_visit = imploded.initial_states.clone();
+    let mut visited = imploded.accept_states.clone();
 
-        for (symbol_seq, to) in implosions {
-            // if the sequence is not full, the merge_fn should return every possible symbol
-            // when the mapping is not 1-to-1 (base64, hex, ...)
-            let imploded_symbols = merge_fn(symbol_seq);
+    while !to_visit.is_empty() {
+        let loop_to_visit = core::mem::take(&mut to_visit);
+        visited.extend(&loop_to_visit);
 
-            for symbol in imploded_symbols {
-                imploded.link(from, to, symbol);
+        for from in loop_to_visit {
+            let mut patterns = Vec::new();
+            rec_implode::<CODEC>(original_dfa, from, Pattern::default(), 0, &mut patterns);
+
+            for (pattern, to) in patterns {
+                for (symbol, value) in CODEC::symbols() {
+                    if value & pattern.mask == pattern.value {
+                        imploded.link(from, to, symbol);
+
+                        if !visited.contains(&to) {
+                            to_visit.insert(to);
+                        }
+                    }
+                }
             }
         }
     }
@@ -29,26 +35,40 @@ where
     imploded
 }
 
-fn rec_implode<T>(
-    implosions: &mut Vec<(Vec<T>, State)>,
-    curr_seq: &mut Vec<T>,
-    dfa: &Dfa<T>,
+#[derive(Debug, Default, Clone, Copy)]
+struct Pattern {
+    pub mask: u32,
+    pub value: u32,
+}
+
+fn rec_implode<CODEC: Codec>(
+    original_dfa: &Dfa<bool>,
     from_state: State,
-    n: usize,
-) where
-    T: Clone + Hash + Eq + Debug,
-{
-    for link in dfa.links_from(from_state) {
-        curr_seq.push(link.symbol.clone());
+    prev_pattern: Pattern,
+    depth: usize,
+    patterns: &mut Vec<(Pattern, State)>,
+) {
+    for link in original_dfa.links_from(from_state) {
+        let mut link_pattern = prev_pattern;
 
-        if dfa.accept_states.contains(&link.to) || n == 1 {
-            implosions.push((curr_seq.clone(), link.to));
+        link_pattern.value <<= 1;
+        link_pattern.mask <<= 1;
+
+        let bit = if link.symbol { 1 } else { 0 };
+        link_pattern.value |= bit;
+        link_pattern.mask |= 1;
+
+        let is_final = depth + 1 == CODEC::BITS;
+        let accept_state = original_dfa.accept_states.contains(&link.to);
+
+        if is_final || accept_state {
+            let mut accept_pattern = link_pattern;
+            let rest = CODEC::BITS - depth - 1;
+            accept_pattern.mask <<= rest;
+            accept_pattern.value <<= rest;
+            patterns.push((accept_pattern, link.to));
+        } else {
+            rec_implode::<CODEC>(original_dfa, link.to, link_pattern, depth + 1, patterns);
         }
-
-        if n > 1 {
-            rec_implode(implosions, curr_seq, dfa, link.to, n - 1);
-        }
-
-        curr_seq.pop();
     }
 }

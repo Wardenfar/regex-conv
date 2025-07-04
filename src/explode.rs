@@ -1,30 +1,40 @@
-use itertools::{Itertools, Position};
+use regex_automata::Dfa;
 
-use crate::{automata::Dfa, counter::Counter};
+use crate::codec::Codec;
 
-pub fn explode_dfa<EF, T, T2>(dfa: &Dfa<T>, expand_fn: EF) -> Dfa<T2>
-where
-    EF: Fn(&T) -> Vec<T2>,
-{
-    let mut counter = Counter::new(dfa.max_state() + 1);
+pub fn explode_dfa<CODEC: Codec>(original_dfa: &Dfa<u8>) -> Result<Dfa<bool>, ()> {
+    let counter = original_dfa.next_counter();
 
-    let mut exploded = Dfa::new();
-    exploded.initial_states = dfa.initial_states.clone();
-    exploded.accept_states = dfa.accept_states.clone();
+    let mut exploded_dfa = Dfa::new();
+    exploded_dfa.initial_states = original_dfa.initial_states.clone();
+    exploded_dfa.accept_states = original_dfa.accept_states.clone();
 
-    for link in &dfa.links {
-        let expanded_symbol = expand_fn(&link.symbol);
+    for link in &original_dfa.links {
+        let Some(value) = symbol_value::<CODEC>(link.symbol) else {
+            println!(
+                "symbol {:?} not supported by {:?}",
+                link.symbol,
+                CODEC::name()
+            );
+            return Err(());
+        };
 
         let mut prev = link.from;
-        for (position, item) in expanded_symbol.into_iter().with_position() {
-            let next = match position {
-                Position::Last | Position::Only => link.to,
-                Position::Middle | Position::First => counter.next(),
-            };
-            exploded.link(prev, next, item);
+        for i in 0..CODEC::BITS {
+            let is_last = i + 1 == CODEC::BITS;
+
+            let bit_idx = CODEC::BITS - i - 1;
+            let bit = ((value >> bit_idx) & 1) != 0;
+
+            let next = if is_last { link.to } else { counter.next() };
+            exploded_dfa.link(prev, next, bit);
             prev = next;
         }
     }
 
-    exploded
+    Ok(exploded_dfa)
+}
+
+fn symbol_value<CODEC: Codec>(search_sym: u8) -> Option<u32> {
+    CODEC::symbols().find_map(|(sym, value)| (sym == search_sym).then_some(value))
 }

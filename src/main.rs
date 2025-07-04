@@ -1,98 +1,102 @@
-use clap::Parser;
-use itertools::Itertools;
+use std::process::ExitCode;
+
+use clap::{Parser, ValueEnum};
+
+use regex_automata::{determine_and_minimize_nfa, dfa_to_hir, hir_to_nfa};
 use regex_conv::{
-    determine::determine_and_min_nfa, dfa_to_hir::dfa_to_hir, explode::explode_dfa,
-    hir_to_nfa::hir_to_nfa, implode::implode_dfa, to_dot::automata_to_dot,
+    codec::{Base64, Bin, Codec, Hex, Raw},
+    explode::explode_dfa,
+    implode::implode_dfa,
 };
 use regex_syntax::{
-    hir::{Class, ClassBytes, ClassBytesRange, Hir},
+    hir::{Class, ClassBytes, ClassBytesRange, Hir, Repetition},
     ParserBuilder,
 };
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
-    #[arg(long)]
-    strict_offset: bool,
+    encoding: Encoding,
     regex: String,
 }
 
-fn main() {
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum Encoding {
+    Raw,
+    Base64,
+    Hex,
+    Bin,
+}
+
+fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    let mut parser = ParserBuilder::default().unicode(false).utf8(false).build();
-    let mut hir = parser.parse(&cli.regex).unwrap();
+    let mut parser = ParserBuilder::default()
+        .dot_matches_new_line(true)
+        .unicode(false)
+        .utf8(false)
+        .build();
 
-    if !cli.strict_offset {
-        let dot = Hir::class(Class::Bytes(ClassBytes::new([ClassBytesRange::new(
+    let hir = match parser.parse(&cli.regex) {
+        Ok(hir) => hir,
+        Err(error) => {
+            println!("Regex parsing error : {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match cli.encoding {
+        Encoding::Raw => run::<Raw>(hir),
+        Encoding::Base64 => run::<Base64>(hir),
+        Encoding::Hex => run::<Hex>(hir),
+        Encoding::Bin => run::<Bin>(hir),
+    }
+}
+
+fn run<C: Codec>(mut hir: Hir) -> ExitCode {
+    // for some encoding, like base64, the regex needs to take into account a number of previous char
+    let byte_span = 8 / lcm(C::BITS as u32, 8);
+    if byte_span > 1 {
+        let any_byte = Hir::class(Class::Bytes(ClassBytes::new([ClassBytesRange::new(
             0, 255,
         )])));
-        let dot_opt = Hir::alternation(vec![dot, Hir::empty()]);
-        hir = Hir::concat(vec![dot_opt.clone(), dot_opt.clone(), hir]);
+        let any_byte_empty = Hir::alternation(vec![any_byte, Hir::empty()]);
+
+        let prefix = Hir::repetition(Repetition {
+            min: byte_span - 1,
+            max: Some(byte_span - 1),
+            greedy: true, // not effectful
+            sub: Box::new(any_byte_empty),
+        });
+
+        hir = Hir::concat(vec![prefix, hir]);
     }
 
     let nfa = hir_to_nfa(&hir);
-    // automata_to_dot(&mut stdout(), &nfa).unwrap();
+    let dfa = determine_and_minimize_nfa(nfa);
 
-    let dfa = determine_and_min_nfa(nfa);
+    let Ok(exploded) = explode_dfa::<Raw>(&dfa) else {
+        return ExitCode::FAILURE;
+    };
 
-    // automata_to_dot(&mut stdout(), &dfa).unwrap();
+    let min_exploded = determine_and_minimize_nfa(exploded.into_nfa());
+    let imploded = implode_dfa::<C>(&min_exploded);
+    let min_imploded = determine_and_minimize_nfa(imploded.into_nfa());
+    let regex = dfa_to_hir(min_imploded);
+    println!("{regex}");
 
-    // dbg!(hir);
-    // dbg!(&nfa);
-    //nfa_to_dot(&mut stdout(), &nfa).unwrap();
-    let exploded = explode_dfa(&dfa, |byte: &u8| {
-        (0..8).rev().map(|i| (byte >> i) & 1 == 1).collect_vec()
-    });
+    ExitCode::SUCCESS
+}
 
-    let min_exploded = determine_and_min_nfa(exploded.to_nfa());
+fn lcm(a: u32, b: u32) -> u32 {
+    b * gcd(a, b) / a
+}
 
-    // automata_to_dot(&mut stdout(), &min_exploded).unwrap();
-
-    let imploded = implode_dfa(&min_exploded, 6, |list| {
-        assert!(list.len() <= 6);
-        if list.len() == 0 {
-            return Vec::new();
-        }
-        let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-        let mut ones = 0_u8;
-        let mut zeroes = 0_u8;
-        for bit in 0..6 {
-            zeroes <<= 1;
-            ones <<= 1;
-            match list.get(bit) {
-                Some(true) => {
-                    ones |= 1;
-                    zeroes |= 1;
-                }
-                Some(false) => {}
-                None => {
-                    ones |= 1;
-                }
-            }
-        }
-
-        alphabet
-            .chars()
-            .enumerate()
-            .filter_map(|(idx, c)| {
-                let idx = idx as u8;
-                let mask = !(zeroes ^ ones);
-                if idx & mask == zeroes & mask {
-                    Some(c)
-                } else {
-                    None
-                }
-            })
-            .collect_vec()
-    });
-
-    //dbg!(&nfa3);
-
-    let min_imploded = determine_and_min_nfa(imploded.to_nfa());
-    //automata_to_dot(&mut stdout(), &min_imploded).unwrap();
-
-    let regex = dfa_to_hir(&min_imploded);
-    println!("{regex}")
+fn gcd(mut a: u32, mut b: u32) -> u32 {
+    while a != 0 {
+        let remainder = b % a;
+        b = a;
+        a = remainder;
+    }
+    b
 }
