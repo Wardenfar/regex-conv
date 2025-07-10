@@ -55,7 +55,7 @@ fn main() -> ExitCode {
 
 fn run<C: Codec>(mut hir: Hir) -> ExitCode {
     // for some encoding, like base64, the regex needs to take into account a number of previous char
-    let byte_span = 8 / lcm(C::BITS as u32, 8);
+    let byte_span = C::BITS as u32 / lcm(C::BITS as u32, 8);
     if byte_span > 1 {
         let any_byte = Hir::class(Class::Bytes(ClassBytes::new([ClassBytesRange::new(
             0, 255,
